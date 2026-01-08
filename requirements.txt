@@ -1,0 +1,7 @@
+selenium
+webdriver-manager
+customtkinter
+pystray
+Pillow
+schedule
+pyinstaller
