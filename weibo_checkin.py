@@ -5,9 +5,8 @@ import json
 import threading
 import ctypes
 import re
-import schedule
+import winreg
 import tkinter as tk
-from tkinter import messagebox
 import customtkinter as ctk
 from PIL import Image, ImageDraw
 import pystray
@@ -18,20 +17,18 @@ from selenium.webdriver.edge.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
-# === 全局设置 ===
+# ================= 全局配置 =================
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
-CONFIG_FILE = "config.json"
 
-# === 电源管理模块 (V8.0 键盘宏版) ===
+CONFIG_FILE = "config.json"
+APP_REGISTRY_NAME = "WeiboSuperTopicAutoSignV9"
+
+# ================= 模块1: 物理级电源管理 =================
 class PowerManagement:
-    ES_CONTINUOUS = 0x80000000
-    ES_SYSTEM_REQUIRED = 0x00000001
-    
-    # 键盘按键码定义
+    """模拟物理按键连招: Win + X -> U -> S"""
     VK_LWIN = 0x5B
     VK_X = 0x58
     VK_U = 0x55
@@ -40,313 +37,346 @@ class PowerManagement:
 
     @staticmethod
     def press_key(vk_code):
-        """模拟按下并释放一个键"""
-        ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0) # 按下
+        ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
         time.sleep(0.1)
-        ctypes.windll.user32.keybd_event(vk_code, 0, PowerManagement.KEYEVENTF_KEYUP, 0) # 抬起
+        ctypes.windll.user32.keybd_event(vk_code, 0, PowerManagement.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.1)
 
     @staticmethod
-    def prevent_sleep():
-        ctypes.windll.kernel32.SetThreadExecutionState(PowerManagement.ES_CONTINUOUS | PowerManagement.ES_SYSTEM_REQUIRED)
+    def execute_sleep_macro():
+        print("💤 执行强制睡眠宏 (Win+X, U, S)...")
+        ctypes.windll.user32.keybd_event(PowerManagement.VK_LWIN, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(PowerManagement.VK_X, 0, 0, 0)
+        time.sleep(0.2)
+        ctypes.windll.user32.keybd_event(PowerManagement.VK_LWIN, 0, PowerManagement.KEYEVENTF_KEYUP, 0)
+        ctypes.windll.user32.keybd_event(PowerManagement.VK_X, 0, PowerManagement.KEYEVENTF_KEYUP, 0)
+        time.sleep(1.0)
+        PowerManagement.press_key(PowerManagement.VK_U)
+        time.sleep(0.5)
+        PowerManagement.press_key(PowerManagement.VK_S)
 
-    @staticmethod
-    def allow_sleep():
-        ctypes.windll.kernel32.SetThreadExecutionState(PowerManagement.ES_CONTINUOUS)
-
-    @staticmethod
-    def force_system_sleep():
-        """【物理外挂】模拟 Win+X -> U -> S 连招"""
-        print("[电源] 任务完成，正在模拟键盘操作进行睡眠...")
-        time.sleep(2)
+# ================= 模块2: 安全睡眠弹窗 =================
+class SafetySleepWindow(ctk.CTkToplevel):
+    def __init__(self, parent, on_cancel, on_timeout):
+        super().__init__(parent)
+        self.on_cancel = on_cancel
+        self.on_timeout = on_timeout
+        self.remaining_time = 60
+        self.is_running = True
         
-        try:
-            # 1. 按下 Win + X 调出系统菜单
-            print(" -> 动作: Win + X")
-            ctypes.windll.user32.keybd_event(PowerManagement.VK_LWIN, 0, 0, 0) # 按住 Win
-            ctypes.windll.user32.keybd_event(PowerManagement.VK_X, 0, 0, 0)    # 按下 X
-            time.sleep(0.1)
-            ctypes.windll.user32.keybd_event(PowerManagement.VK_X, 0, PowerManagement.KEYEVENTF_KEYUP, 0) # 松开 X
-            ctypes.windll.user32.keybd_event(PowerManagement.VK_LWIN, 0, PowerManagement.KEYEVENTF_KEYUP, 0) # 松开 Win
-            
-            # 给菜单弹出的时间
-            time.sleep(1.5)
-            
-            # 2. 按下 U (选中“关机或注销”)
-            print(" -> 动作: U")
-            PowerManagement.press_key(PowerManagement.VK_U)
-            
-            # 给子菜单展开的时间
-            time.sleep(1.5)
-            
-            # 3. 按下 S (选中“睡眠”)
-            print(" -> 动作: S (晚安!)")
-            PowerManagement.press_key(PowerManagement.VK_S)
-            
-        except Exception as e:
-            print(f"键盘模拟失败: {e}")
-
-# === 签到核心逻辑 ===
-class CheckInWorker:
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.running = False
-
-    def clean_user_data_locks(self, user_data_path):
-        locks = ['SingletonLock', 'SingletonSocket', 'SingletonCookie']
-        for lock_name in locks:
-            lock_path = os.path.join(user_data_path, lock_name)
-            if os.path.exists(lock_path):
-                try:
-                    os.remove(lock_path)
-                except:
-                    pass
-
-    def run_task(self, config):
-        if self.running:
-            self.log("任务正在运行中，请勿重复触发...")
-            return
+        self.title("准备睡眠 - 安全确认")
+        self.geometry("420x280")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
         
-        self.running = True
-        self.log(">>> 开始执行签到任务...")
-        PowerManagement.prevent_sleep()
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        x = (screen_width - 420) // 2
+        y = (screen_height - 280) // 2
+        self.geometry(f"+{x}+{y}")
         
-        os.environ['no_proxy'] = '*'
-        os.environ['NO_PROXY'] = '*'
-        for k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
-            os.environ.pop(k, None)
+        self.protocol("WM_DELETE_WINDOW", self.cancel_sleep)
 
-        user_data = config.get("user_data_path", "")
-        urls = config.get("urls", [])
+        self.label_status = ctk.CTkLabel(self, text="✅ 所有任务已完成", font=("Microsoft YaHei", 22, "bold"), text_color="#2CC985")
+        self.label_status.pack(pady=(35, 10))
+
+        self.label_desc = ctk.CTkLabel(self, text="系统准备进入睡眠模式", font=("Microsoft YaHei", 14), text_color="gray")
+        self.label_desc.pack(pady=(0, 20))
+
+        self.label_timer = ctk.CTkLabel(self, text=f"⏳ {self.remaining_time} 秒后自动睡眠...", font=("Microsoft YaHei", 18, "bold"))
+        self.label_timer.pack(pady=10)
+
+        self.btn_cancel = ctk.CTkButton(
+            self, text="🚫 取消睡眠 (我在用电脑)", fg_color="#FF4500", hover_color="#CC3700",
+            width=220, height=50, font=("Microsoft YaHei", 16, "bold"), command=self.cancel_sleep
+        )
+        self.btn_cancel.pack(pady=20)
         
-        if not urls:
-            self.log("[错误] 没有检测到有效的超话链接！")
-            self.running = False
-            return
+        self.timer_loop()
 
-        if not os.path.exists(user_data):
-            self.log("[错误] User Data 路径不存在！")
-            self.running = False
-            return
+    def timer_loop(self):
+        if not self.is_running: return
+        if self.remaining_time > 0:
+            self.label_timer.configure(text=f"⏳ {self.remaining_time} 秒后自动睡眠...")
+            self.remaining_time -= 1
+            self.after(1000, self.timer_loop)
+        else:
+            self.is_running = False
+            self.destroy()
+            self.on_timeout()
 
-        self.clean_user_data_locks(user_data)
+    def cancel_sleep(self):
+        self.is_running = False
+        self.destroy()
+        self.on_cancel()
 
-        driver = None
-        try:
-            edge_options = Options()
-            edge_options.add_argument(f"--user-data-dir={user_data}")
-            edge_options.add_argument("--profile-directory=Default")
-            edge_options.add_argument("--disable-blink-features=AutomationControlled")
-            edge_options.add_argument("--disable-features=msEdgeStartupBoost")
-            edge_options.add_argument("--remote-debugging-port=9222")
-            edge_options.add_argument("--log-level=3")
-            edge_options.add_argument("--headless=new") 
-            
-            self.log("正在启动后台引擎...")
-            try:
-                service = Service(EdgeChromiumDriverManager().install())
-                driver = webdriver.Edge(service=service, options=edge_options)
-            except:
-                driver = webdriver.Edge(options=edge_options)
-            
-            self.log(f"引擎启动成功，共 {len(urls)} 个任务...")
-            
-            for i, url in enumerate(urls):
-                self.log(f"--- 正在处理 ({i+1}/{len(urls)}) ---")
-                self.check_one(driver, url)
-                time.sleep(2)
-                
-            self.log("所有签到任务已完成！")
-            
-        except Exception as e:
-            self.log(f"[致命错误] {str(e)}")
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except:
-                    pass
-            PowerManagement.allow_sleep()
-            self.running = False
-            
-            # 检查自动休眠
-            if config.get("auto_sleep", False):
-                self.log("任务完成，即将模拟按键休眠...")
-                PowerManagement.force_system_sleep()
-
-    def check_one(self, driver, url):
-        max_retries = 2
-        for attempt in range(1, max_retries + 1):
-            try:
-                driver.set_page_load_timeout(60)
-                driver.get(url)
-                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                time.sleep(3)
-
-                targets = driver.find_elements(By.XPATH, "//*[contains(text(), '签到')]")
-                valid_btn = None
-                for t in targets:
-                    try:
-                        txt = t.text.strip()
-                        if "签到" in txt and "已" not in txt and "连续" not in txt and len(txt) < 6 and t.is_displayed():
-                            valid_btn = t
-                            break
-                    except:
-                        continue
-                
-                if valid_btn:
-                    self.log(f" -> 锁定按钮: [{valid_btn.text}]")
-                    try:
-                        driver.execute_script("arguments[0].click();", valid_btn)
-                    except:
-                        valid_btn.click()
-                    self.log(" -> 动作: 点击完成")
-                    time.sleep(2)
-                    return
-
-                is_done = False
-                try:
-                    done_elements = driver.find_elements(By.XPATH, "//*[text()='已签到']")
-                    for el in done_elements:
-                        if el.is_displayed():
-                            is_done = True
-                            break
-                except:
-                    pass
-                    
-                if is_done:
-                    self.log(" -> 状态: 检测到【已签到】，跳过。")
-                    return
-                else:
-                    self.log(f" -> 未找到按钮 (第{attempt}次重试)")
-                    if attempt < max_retries:
-                        driver.refresh()
-                        time.sleep(3)
-
-            except Exception as e:
-                self.log(f" -> 错误: {str(e)[:30]}")
-
-# === GUI 主程序 ===
-class App(ctk.CTk):
+# ================= 模块3: 主程序逻辑 =================
+class WeiboCheckInApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.title("微博超话自动签到 2.0")
+        self.geometry("750x650")
         
-        self.title("微博超话自动签到 - 物理外挂版")
-        self.geometry("750x600")
-        self.protocol("WM_DELETE_WINDOW", self.hide_window)
-        
-        self.worker = CheckInWorker(self.log_msg)
         self.config = self.load_config()
+        self.is_running = False
         self.tray_icon = None
-        
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        
-        self.sidebar = ctk.CTkFrame(self, width=140, corner_radius=0)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(4, weight=1)
-        
-        self.logo_label = ctk.CTkLabel(self.sidebar, text="自动签到助手", font=ctk.CTkFont(size=20, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
-        
-        self.btn_save = ctk.CTkButton(self.sidebar, text="保存配置", command=self.save_config)
-        self.btn_save.grid(row=1, column=0, padx=20, pady=10)
-        
-        self.btn_run = ctk.CTkButton(self.sidebar, text="立即运行", fg_color="green", command=self.start_thread)
-        self.btn_run.grid(row=2, column=0, padx=20, pady=10)
-        
-        self.main_frame = ctk.CTkScrollableFrame(self, label_text="配置面板")
-        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        
-        ctk.CTkLabel(self.main_frame, text="Edge User Data 路径:").pack(anchor="w", pady=(10, 0))
-        self.entry_path = ctk.CTkEntry(self.main_frame, width=400)
-        self.entry_path.pack(fill="x", pady=5)
-        self.entry_path.insert(0, self.config.get("user_data_path", ""))
-        
-        ctk.CTkLabel(self.main_frame, text="自动运行时间 (格式 HH:MM):").pack(anchor="w", pady=(10, 0))
-        self.entry_time = ctk.CTkEntry(self.main_frame, width=100)
-        self.entry_time.pack(anchor="w", pady=5)
-        self.entry_time.insert(0, self.config.get("schedule_time", "12:00"))
-        
-        self.switch_sleep_var = ctk.BooleanVar(value=self.config.get("auto_sleep", False))
-        self.switch_sleep = ctk.CTkSwitch(self.main_frame, text="任务完成后自动让电脑睡眠 (Win+X, U, S)", variable=self.switch_sleep_var)
-        self.switch_sleep.pack(anchor="w", pady=10)
-        
-        ctk.CTkLabel(self.main_frame, text="超话链接 (自动识别):").pack(anchor="w", pady=(10, 0))
-        self.txt_urls = ctk.CTkTextbox(self.main_frame, height=180, wrap="none")
-        self.txt_urls.pack(fill="x", pady=5)
-        self.txt_urls.insert("0.0", "\n".join(self.config.get("urls", [])))
-        
-        ctk.CTkLabel(self.main_frame, text="运行日志:").pack(anchor="w", pady=(20, 0))
-        self.txt_log = ctk.CTkTextbox(self.main_frame, height=120, state="disabled", wrap="word")
-        self.txt_log.pack(fill="x", pady=5)
 
-        self.scheduler_thread = threading.Thread(target=self.run_scheduler, daemon=True)
-        self.scheduler_thread.start()
+        self.setup_ui()
+        self.sync_registry_switch()
+
+        self.monitor_thread = threading.Thread(target=self.smart_monitor_loop, daemon=True)
+        self.monitor_thread.start()
+
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
     def load_config(self):
-        default = {
-            "user_data_path": r"C:\Users\YourUserName\AppData\Local\Microsoft\Edge\User Data",
-            "urls": [],
-            "schedule_time": "12:00",
-            "auto_sleep": False
+        default_config = {
+            "target_urls": "",  # 变为存储长文本
+            "auto_sleep": False,
+            "auto_start": False,
+            "visible_mode": False, # 新增：是否显示浏览器界面
+            "last_checkin_date": "1970-01-01"
         }
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, "r", encoding='utf-8') as f:
-                    return json.load(f)
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    return {**default_config, **json.load(f)}
             except:
-                return default
-        return default
+                pass
+        return default_config
 
     def save_config(self):
-        raw_text = self.txt_urls.get("0.0", "end")
-        urls = re.findall(r'https?://[^\s\n\r]+', raw_text)
-        urls = list(set(urls))
-        self.log_msg(f"识别到 {len(urls)} 个有效链接。")
-        new_conf = {
-            "user_data_path": self.entry_path.get().strip(),
-            "urls": urls,
-            "schedule_time": self.entry_time.get().strip(),
-            "auto_sleep": self.switch_sleep_var.get()
-        }
-        with open(CONFIG_FILE, "w", encoding='utf-8') as f:
-            json.dump(new_conf, f, indent=4, ensure_ascii=False)
-        self.config = new_conf
-        self.log_msg("配置已保存！")
+        self.config["target_urls"] = self.textbox_urls.get("1.0", "end-1c") # 获取多行文本
+        self.config["auto_sleep"] = self.switch_sleep.get()
+        self.config["visible_mode"] = self.switch_visible.get()
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.config, f, indent=4, ensure_ascii=False)
+
+    def setup_ui(self):
+        # 标题
+        self.frame_title = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_title.pack(pady=15)
+        ctk.CTkLabel(self.frame_title, text="微博超话助手 V2.0", font=("Microsoft YaHei", 24, "bold")).pack()
+        ctk.CTkLabel(self.frame_title, text="支持批量链接 | 过程可视化 | 智能睡眠", font=("Microsoft YaHei", 12), text_color="gray").pack()
+
+        # 链接输入区域 (改为 Textbox 以支持多行)
+        self.frame_input = ctk.CTkFrame(self)
+        self.frame_input.pack(pady=5, padx=20, fill="x")
+        ctk.CTkLabel(self.frame_input, text="超话链接列表 (一行一个，支持直接粘贴混杂文本):").pack(anchor="w", padx=10, pady=5)
+        
+        self.textbox_urls = ctk.CTkTextbox(self.frame_input, height=100)
+        self.textbox_urls.pack(fill="x", padx=10, pady=(0, 10))
+        self.textbox_urls.insert("1.0", self.config.get("target_urls", ""))
+
+        # 开关区域
+        self.frame_switches = ctk.CTkFrame(self)
+        self.frame_switches.pack(pady=5, padx=20, fill="x")
+        
+        # 1. 开机自启
+        self.switch_autostart = ctk.CTkSwitch(self.frame_switches, text="开机自启", command=self.toggle_autostart)
+        self.switch_autostart.pack(side="left", padx=15, pady=15)
+        
+        # 2. 自动睡眠
+        self.switch_sleep = ctk.CTkSwitch(self.frame_switches, text="完成后睡眠(含保护)")
+        self.switch_sleep.pack(side="left", padx=15, pady=15)
+        if self.config.get("auto_sleep"): self.switch_sleep.select()
+
+        # 3. 显示浏览器 (调试用)
+        self.switch_visible = ctk.CTkSwitch(self.frame_switches, text="显示浏览器界面(排查卡顿)")
+        self.switch_visible.pack(side="left", padx=15, pady=15)
+        if self.config.get("visible_mode"): self.switch_visible.select()
+
+        # 日志框
+        ctk.CTkLabel(self, text="运行日志:", text_color="gray", font=("Microsoft YaHei", 12)).pack(anchor="w", padx=25, pady=(10,0))
+        self.textbox_log = ctk.CTkTextbox(self, height=180, font=("Consolas", 11))
+        self.textbox_log.pack(pady=5, padx=20, fill="both", expand=True)
+        self.log_msg("🚀 V2.0 就绪，请填入链接并保存配置...")
+
+        # 按钮
+        self.btn_run = ctk.CTkButton(self, text="立即手动开始 (测试所有链接)", height=40, command=lambda: threading.Thread(target=self.manual_run).start())
+        self.btn_run.pack(pady=15)
+
+    # ---------------- 注册表自启 ----------------
+    def sync_registry_switch(self):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
+            winreg.QueryValueEx(key, APP_REGISTRY_NAME)
+            self.switch_autostart.select()
+            self.config["auto_start"] = True
+            winreg.CloseKey(key)
+        except:
+            self.switch_autostart.deselect()
+            self.config["auto_start"] = False
+
+    def toggle_autostart(self):
+        is_on = self.switch_autostart.get()
+        app_path = f'"{sys.executable}"' if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            if is_on:
+                winreg.SetValueEx(key, APP_REGISTRY_NAME, 0, winreg.REG_SZ, app_path)
+                self.log_msg("✅ 已开机自启")
+            else:
+                try: winreg.DeleteValue(key, APP_REGISTRY_NAME)
+                except: pass
+                self.log_msg("❎ 已关闭自启")
+            winreg.CloseKey(key)
+            self.config["auto_start"] = is_on
+            self.save_config()
+        except Exception as e:
+            self.log_msg(f"❌ 注册表错误: {e}")
+            self.switch_autostart.toggle()
+
+    # ---------------- 智能监测循环 ----------------
+    def smart_monitor_loop(self):
+        time.sleep(2)
+        self.log_msg("🛡️ 后台监测启动...")
+        while True:
+            try:
+                today = time.strftime("%Y-%m-%d")
+                last_date = self.config.get("last_checkin_date", "1970-01-01")
+                
+                if today != last_date:
+                    self.log_msg(f"📅 新日期 ({today})，准备执行任务...")
+                    time.sleep(10) # 联网缓冲
+                    
+                    if self.execute_batch_task():
+                        self.log_msg("🎉 所有任务均已完成！")
+                        self.config["last_checkin_date"] = today
+                        self.save_config()
+                        if self.switch_sleep.get():
+                            self.after(0, self.trigger_safety_sleep)
+                    else:
+                        self.log_msg("⚠️ 部分任务失败或网络不通，30分钟后重试...")
+                        time.sleep(1800)
+                        continue
+                time.sleep(60)
+            except Exception as e:
+                self.log_msg(f"监测异常: {e}")
+                time.sleep(60)
+
+    def manual_run(self):
+        self.log_msg("🔧 手动触发...")
+        if self.execute_batch_task():
+            today = time.strftime("%Y-%m-%d")
+            self.config["last_checkin_date"] = today
+            self.save_config()
+            self.log_msg("✅ 手动执行完毕")
+            if self.switch_sleep.get():
+                self.after(0, self.trigger_safety_sleep)
+
+    def execute_batch_task(self):
+        """执行所有链接的签到任务"""
+        if self.is_running:
+            self.log_msg("⚠️ 正在运行中...")
+            return False
+        
+        self.is_running = True
+        
+        # 1. 提取所有链接
+        raw_text = self.textbox_urls.get("1.0", "end-1c")
+        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', raw_text)
+        
+        if not urls:
+            self.log_msg("❌ 未检测到链接，请在上方输入框粘贴链接")
+            self.is_running = False
+            return False
+            
+        self.log_msg(f"📋 检测到 {len(urls)} 个超话链接，准备开始...")
+
+        # 2. 配置浏览器
+        driver = None
+        all_success = True
+        
+        try:
+            options = Options()
+            # 根据开关决定是否无头
+            if not self.switch_visible.get():
+                options.add_argument("--headless=new") 
+            
+            options.add_argument("--disable-gpu")
+            options.add_argument("--log-level=3")
+            options.add_argument("--mute-audio")
+            
+            user_data = os.path.join(os.environ['LOCALAPPDATA'], 'Microsoft', 'Edge', 'User Data')
+            options.add_argument(f"--user-data-dir={user_data}")
+            options.add_argument("--profile-directory=Default")
+            
+            self.log_msg("🚀 正在启动 Edge 浏览器...")
+            try:
+                service = Service(EdgeChromiumDriverManager().install())
+            except Exception as e:
+                self.log_msg("⚠️ 自动下载驱动失败 (可能网络问题)，尝试直接启动...")
+                service = Service() # 尝试使用系统默认路径
+                
+            service.creation_flags = 0x08000000 
+            driver = webdriver.Edge(service=service, options=options)
+            
+            # 3. 循环执行签到
+            for i, url in enumerate(urls):
+                self.log_msg(f"👉 [{i+1}/{len(urls)}] 正在访问超话...")
+                try:
+                    driver.get(url)
+                    WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    time.sleep(2) # 等待渲染
+                    
+                    # 查找签到按钮 (增强版 XPath)
+                    xpath = "//a[contains(text(),'签到')] | //div[contains(text(),'签到')] | //span[contains(text(),'签到')]"
+                    btns = driver.find_elements(By.XPATH, xpath)
+                    
+                    clicked = False
+                    for btn in btns:
+                        txt = btn.text
+                        if "已" not in txt and "等级" not in txt and btn.is_displayed():
+                            driver.execute_script("arguments[0].click();", btn)
+                            self.log_msg(f"   🖱️ 点击签到")
+                            clicked = True
+                            time.sleep(2)
+                            break
+                    
+                    if not clicked:
+                        if "已签" in driver.page_source:
+                            self.log_msg(f"   ℹ️ 本页已签到")
+                        else:
+                            self.log_msg(f"   ⚠️ 未找到按钮，可能需登录或页面结构变更")
+                            
+                except Exception as e:
+                    self.log_msg(f"   ❌ 当前链接出错: {str(e)[:50]}")
+                    all_success = False # 标记有失败，但继续下一个
+                
+                time.sleep(1) # 链接间隔
+                
+        except Exception as e:
+            self.log_msg(f"❌ 浏览器严重错误 (驱动/网络): {e}")
+            self.log_msg("💡 建议开启'显示浏览器界面'开关以排查问题")
+            all_success = False
+        finally:
+            if driver:
+                driver.quit()
+            self.is_running = False
+            
+        return all_success
+
+    # ---------------- 辅助功能 ----------------
+    def trigger_safety_sleep(self):
+        SafetySleepWindow(self, lambda: self.log_msg("👋 取消睡眠"), lambda: PowerManagement.execute_sleep_macro())
 
     def log_msg(self, msg):
-        self.txt_log.configure(state="normal")
-        self.txt_log.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-        self.txt_log.see("end")
-        self.txt_log.configure(state="disabled")
+        full_msg = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
+        self.textbox_log.insert("end", full_msg)
+        self.textbox_log.see("end")
 
-    def start_thread(self):
-        self.save_config()
-        t = threading.Thread(target=self.worker.run_task, args=(self.config,))
-        t.start()
-
-    def run_scheduler(self):
-        while True:
-            schedule_time = self.config.get("schedule_time", "12:00")
-            current_time = time.strftime("%H:%M")
-            if current_time == schedule_time and not self.worker.running:
-                self.log_msg(f"⏰ 到达设定时间 {schedule_time}，自动启动...")
-                t = threading.Thread(target=self.worker.run_task, args=(self.config,))
-                t.start()
-                time.sleep(61)
-            time.sleep(2)
-
-    def hide_window(self):
+    def hide_to_tray(self):
         self.withdraw()
-        if not self.tray_icon:
-            self.create_tray_icon()
-        self.tray_icon.notify("程序后台运行中...", "微博助手")
+        if not self.tray_icon: self.create_tray_icon()
 
     def show_window(self, icon=None, item=None):
         self.deiconify()
         self.lift()
 
     def quit_app(self, icon, item):
+        self.save_config()
         self.tray_icon.stop()
         self.destroy()
         sys.exit()
@@ -355,14 +385,10 @@ class App(ctk.CTk):
         image = Image.new('RGB', (64, 64), color=(30, 144, 255))
         draw = ImageDraw.Draw(image)
         draw.rectangle((16, 16, 48, 48), fill="white")
-        menu = (
-            pystray.MenuItem('显示窗口', self.show_window, default=True),
-            pystray.MenuItem('立即运行', lambda: self.start_thread()),
-            pystray.MenuItem('退出', self.quit_app)
-        )
-        self.tray_icon = pystray.Icon("WeiboHelper", image, "微博签到助手", menu)
+        menu = (pystray.MenuItem('显示主界面', self.show_window, default=True), pystray.MenuItem('退出', self.quit_app))
+        self.tray_icon = pystray.Icon("weibo_helper", image, "微博助手", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
 if __name__ == "__main__":
-    app = App()
+    app = WeiboCheckInApp()
     app.mainloop()

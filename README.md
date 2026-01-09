@@ -1,26 +1,31 @@
-# Weibo Super Topic Auto Check-in (微博超话自动签到助手)
+# 微博超话自动签到助手 (Weibo SuperTopic Auto Sign) V2.0
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg) ![License](https://img.shields.io/badge/License-MIT-green.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-orange.svg)
+基于 Python + Selenium + CustomTkinter 开发的智能签到工具。
+专为解决“忘记签到”和“后台静默运行”需求设计，支持开机自启、智能日期监测及防误触自动睡眠。
 
-一个基于 Python + Selenium 的微博超话自动签到工具。
-专为 Windows 11 设计，采用现代化 UI，支持托盘最小化、自动识别链接、以及**独家的“物理级”防系统拦截睡眠功能**。
+## ✨ 核心特性 (V2.0)
 
-## ✨ 核心功能
-
-* **Win11 风格 UI**：使用 `customtkinter` 构建的现代化深色界面。
-* **托盘后台运行**：点击关闭按钮自动最小化到托盘，不占用任务栏。
-* **智能链接识别**：无论你粘贴的链接是否换行、断裂，利用正则自动提取有效超话 URL。
-* **免登录操作**：调用本地 Edge 浏览器 User Data，保留你的登录状态。
-* **静默执行**：默认开启无头模式（Headless），后台悄悄签到，不弹窗干扰。
-* **强力睡眠模式 (New)**：
-    * 针对联想等新款笔记本无法通过 API 睡眠的问题，**V8.0 版本内置“物理外挂”**。
-    * 通过模拟键盘连招 `Win + X` -> `U` -> `S`，绕过系统权限拦截，强制电脑睡眠。
+* **🛡️ 智能后台监测**：
+    * 基于日期的智能判断机制。
+    * 今日已签 -> 静默待机；今日未签 -> 立即执行。
+    * 支持跨天（00:00）自动触发。
+* **🚀 开机自动启动**：
+    * 内置注册表管理（WinReg），一键设置开机自启，后台静默运行。
+* **🔗 批量签到支持**：
+    * 支持多行文本输入，一次性处理数十个超话链接。
+* **💤 防误触安全睡眠**：
+    * 任务完成后尝试睡眠前，会弹出 **60秒置顶倒计时窗口**。
+    * 用户在使用电脑时可点击“取消”，防止游戏/工作中断。
+    * 采用物理级睡眠宏（Win+X -> U -> S），兼容性更强。
+* **👁️ 可视化/无头模式切换**：
+    * 提供“显示浏览器界面”开关，方便排查网络或验证码问题。
+* **🔧 自动驱动管理**：
+    * 集成 `webdriver_manager`，自动适配 Edge 浏览器版本。
 
 ## 🛠️ 安装与使用
 
 ### 1. 环境准备
-确保已安装 [Python 3.10+](https://www.python.org/) 和 Microsoft Edge 浏览器。
+确保已安装 Python 3.x 和 Edge 浏览器。
 
-### 2. 安装依赖
 ```bash
 pip install -r requirements.txt
