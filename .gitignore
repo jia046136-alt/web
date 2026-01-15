@@ -1,28 +1,29 @@
-# Python cache
+# Python 缓存
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# IDE settings (VS Code / JetBrains)
+# IDE 配置文件
 .vscode/
 .idea/
 *.swp
 
-# Local Configuration (敏感数据，务必忽略)
+# 本地隐私配置 (绝对不要上传)
 config.json
 
-# Build artifacts (PyInstaller 生成的)
+# 打包产物
 build/
 dist/
 *.spec
 
-# Selenium / WebDriver logs
+# 浏览器驱动日志
+*.log
 geckodriver.log
 msedgedriver.log
 webdriver.log
 
-# Virtual Environment
+# 虚拟环境
 venv/
 env/
 .env
