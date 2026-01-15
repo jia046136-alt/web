@@ -20,13 +20,14 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 # ================= 全局配置 =================
-ctk.set_appearance_mode("Dark")
+# 1. 强制浅色主题
+ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
 CONFIG_FILE = "config.json"
-APP_REGISTRY_NAME = "WeiboSuperTopicAutoSignV9"
+APP_REGISTRY_NAME = "WeiboSuperTopicAutoSignV3"
 
-# ================= 模块1: 物理级电源管理 =================
+# ================= 模块1: 物理级电源管理 (保留原有逻辑) =================
 class PowerManagement:
     """模拟物理按键连招: Win + X -> U -> S"""
     VK_LWIN = 0x5B
@@ -55,7 +56,7 @@ class PowerManagement:
         time.sleep(0.5)
         PowerManagement.press_key(PowerManagement.VK_S)
 
-# ================= 模块2: 安全睡眠弹窗 =================
+# ================= 模块2: 安全睡眠弹窗 (保留原有逻辑) =================
 class SafetySleepWindow(ctk.CTkToplevel):
     def __init__(self, parent, on_cancel, on_timeout):
         super().__init__(parent)
@@ -64,31 +65,29 @@ class SafetySleepWindow(ctk.CTkToplevel):
         self.remaining_time = 60
         self.is_running = True
         
-        self.title("准备睡眠 - 安全确认")
-        self.geometry("420x280")
+        self.title("准备进入睡眠")
+        self.geometry("420x250")
         self.resizable(False, False)
         self.attributes("-topmost", True)
         
+        # 居中逻辑
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         x = (screen_width - 420) // 2
-        y = (screen_height - 280) // 2
+        y = (screen_height - 250) // 2
         self.geometry(f"+{x}+{y}")
         
         self.protocol("WM_DELETE_WINDOW", self.cancel_sleep)
 
-        self.label_status = ctk.CTkLabel(self, text="✅ 所有任务已完成", font=("Microsoft YaHei", 22, "bold"), text_color="#2CC985")
-        self.label_status.pack(pady=(35, 10))
+        self.label_status = ctk.CTkLabel(self, text="✅ 任务完成，准备待机", font=("Microsoft YaHei", 20, "bold"), text_color="#2E8B57")
+        self.label_status.pack(pady=(30, 10))
 
-        self.label_desc = ctk.CTkLabel(self, text="系统准备进入睡眠模式", font=("Microsoft YaHei", 14), text_color="gray")
-        self.label_desc.pack(pady=(0, 20))
-
-        self.label_timer = ctk.CTkLabel(self, text=f"⏳ {self.remaining_time} 秒后自动睡眠...", font=("Microsoft YaHei", 18, "bold"))
+        self.label_timer = ctk.CTkLabel(self, text=f"⏳ {self.remaining_time} 秒后自动睡眠...", font=("Microsoft YaHei", 16))
         self.label_timer.pack(pady=10)
 
         self.btn_cancel = ctk.CTkButton(
-            self, text="🚫 取消睡眠 (我在用电脑)", fg_color="#FF4500", hover_color="#CC3700",
-            width=220, height=50, font=("Microsoft YaHei", 16, "bold"), command=self.cancel_sleep
+            self, text="🚫 取消睡眠 (我在用电脑)", fg_color="#FF6347", hover_color="#CD5C5C",
+            width=200, height=45, font=("Microsoft YaHei", 14, "bold"), command=self.cancel_sleep
         )
         self.btn_cancel.pack(pady=20)
         
@@ -110,18 +109,22 @@ class SafetySleepWindow(ctk.CTkToplevel):
         self.destroy()
         self.on_cancel()
 
-# ================= 模块3: 主程序逻辑 =================
+# ================= 模块3: V3.0 主界面逻辑 =================
 class WeiboCheckInApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("微博超话自动签到 2.0")
-        self.geometry("750x650")
+        self.title("微博超话助手 V3.0 (Light)")
+        self.geometry("800x700")
         
         self.config = self.load_config()
         self.is_running = False
         self.tray_icon = None
+        
+        # 存储动态行的引用列表 [{"id": frame, "url_entry": entry, "note_entry": entry}, ...]
+        self.row_widgets = [] 
 
         self.setup_ui()
+        self.load_rows_from_config() # 界面加载完毕后填充数据
         self.sync_registry_switch()
 
         self.monitor_thread = threading.Thread(target=self.smart_monitor_loop, daemon=True)
@@ -131,72 +134,138 @@ class WeiboCheckInApp(ctk.CTk):
 
     def load_config(self):
         default_config = {
-            "target_urls": "",  # 变为存储长文本
+            "targets": [],  # V3.0 新结构: [{"url": "...", "note": "..."}]
             "auto_sleep": False,
             "auto_start": False,
-            "visible_mode": False, # 新增：是否显示浏览器界面
+            "visible_mode": False,
             "last_checkin_date": "1970-01-01"
         }
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    return {**default_config, **json.load(f)}
+                    data = json.load(f)
+                    # 兼容 V9.1 旧配置 (如果是字符串则转换)
+                    if "target_urls" in data:
+                        old_urls = re.findall(r'http[s]?://[^\s]+', data["target_urls"])
+                        data["targets"] = [{"url": u, "note": "旧数据"} for u in old_urls]
+                        del data["target_urls"]
+                    return {**default_config, **data}
             except:
                 pass
         return default_config
 
     def save_config(self):
-        self.config["target_urls"] = self.textbox_urls.get("1.0", "end-1c") # 获取多行文本
+        # 1. 从 UI 获取最新数据
+        current_targets = []
+        for row in self.row_widgets:
+            u = row["url_entry"].get().strip()
+            n = row["note_entry"].get().strip()
+            if u: # 忽略空行
+                current_targets.append({"url": u, "note": n})
+        
+        self.config["targets"] = current_targets
         self.config["auto_sleep"] = self.switch_sleep.get()
         self.config["visible_mode"] = self.switch_visible.get()
+        
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=4, ensure_ascii=False)
+        
+        return len(current_targets)
 
     def setup_ui(self):
-        # 标题
-        self.frame_title = ctk.CTkFrame(self, fg_color="transparent")
-        self.frame_title.pack(pady=15)
-        ctk.CTkLabel(self.frame_title, text="微博超话助手 V2.0", font=("Microsoft YaHei", 24, "bold")).pack()
-        ctk.CTkLabel(self.frame_title, text="支持批量链接 | 过程可视化 | 智能睡眠", font=("Microsoft YaHei", 12), text_color="gray").pack()
+        # --- 顶部标题 ---
+        self.frame_top = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_top.pack(pady=15, padx=20, fill="x")
+        ctk.CTkLabel(self.frame_top, text="Weibo SuperTopic V3.0", font=("Arial", 22, "bold"), text_color="#333").pack(side="left")
+        ctk.CTkLabel(self.frame_top, text="清爽 · 可视化 · 智能", font=("Microsoft YaHei", 12), text_color="gray").pack(side="left", padx=10, pady=(8,0))
 
-        # 链接输入区域 (改为 Textbox 以支持多行)
-        self.frame_input = ctk.CTkFrame(self)
-        self.frame_input.pack(pady=5, padx=20, fill="x")
-        ctk.CTkLabel(self.frame_input, text="超话链接列表 (一行一个，支持直接粘贴混杂文本):").pack(anchor="w", padx=10, pady=5)
+        # --- 核心操作区 (添加/保存) ---
+        self.frame_actions = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_actions.pack(padx=20, fill="x")
         
-        self.textbox_urls = ctk.CTkTextbox(self.frame_input, height=100)
-        self.textbox_urls.pack(fill="x", padx=10, pady=(0, 10))
-        self.textbox_urls.insert("1.0", self.config.get("target_urls", ""))
+        self.btn_add = ctk.CTkButton(self.frame_actions, text="➕ 添加超话", width=100, command=lambda: self.add_row_ui())
+        self.btn_add.pack(side="left", padx=(0, 10))
+        
+        self.btn_save = ctk.CTkButton(self.frame_actions, text="💾 保存配置", width=100, fg_color="#6c757d", hover_color="#5a6268", command=self.manual_save)
+        self.btn_save.pack(side="left")
 
-        # 开关区域
+        # --- 列表滚动区 ---
+        self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="超话管理列表", height=250, label_font=("Microsoft YaHei", 12, "bold"))
+        self.scroll_frame.pack(padx=20, pady=10, fill="x")
+
+        # --- 设置开关区 ---
         self.frame_switches = ctk.CTkFrame(self)
         self.frame_switches.pack(pady=5, padx=20, fill="x")
         
-        # 1. 开机自启
         self.switch_autostart = ctk.CTkSwitch(self.frame_switches, text="开机自启", command=self.toggle_autostart)
-        self.switch_autostart.pack(side="left", padx=15, pady=15)
+        self.switch_autostart.pack(side="left", padx=20, pady=15)
         
-        # 2. 自动睡眠
         self.switch_sleep = ctk.CTkSwitch(self.frame_switches, text="完成后睡眠(含保护)")
-        self.switch_sleep.pack(side="left", padx=15, pady=15)
+        self.switch_sleep.pack(side="left", padx=20, pady=15)
         if self.config.get("auto_sleep"): self.switch_sleep.select()
 
-        # 3. 显示浏览器 (调试用)
-        self.switch_visible = ctk.CTkSwitch(self.frame_switches, text="显示浏览器界面(排查卡顿)")
-        self.switch_visible.pack(side="left", padx=15, pady=15)
+        self.switch_visible = ctk.CTkSwitch(self.frame_switches, text="显示浏览器(调试)")
+        self.switch_visible.pack(side="left", padx=20, pady=15)
         if self.config.get("visible_mode"): self.switch_visible.select()
 
-        # 日志框
-        ctk.CTkLabel(self, text="运行日志:", text_color="gray", font=("Microsoft YaHei", 12)).pack(anchor="w", padx=25, pady=(10,0))
-        self.textbox_log = ctk.CTkTextbox(self, height=180, font=("Consolas", 11))
+        # --- 日志区 ---
+        ctk.CTkLabel(self, text="运行日志:", text_color="gray", font=("Microsoft YaHei", 12)).pack(anchor="w", padx=25, pady=(5,0))
+        self.textbox_log = ctk.CTkTextbox(self, height=150, font=("Consolas", 11), fg_color="#f0f0f0", text_color="#333")
         self.textbox_log.pack(pady=5, padx=20, fill="both", expand=True)
-        self.log_msg("🚀 V2.0 就绪，请填入链接并保存配置...")
+        
+        # --- 底部按钮 ---
+        self.btn_run = ctk.CTkButton(self, text="🚀 立即测试所有任务", height=45, font=("Microsoft YaHei", 14, "bold"), command=lambda: threading.Thread(target=self.manual_run).start())
+        self.btn_run.pack(pady=15, padx=20, fill="x")
 
-        # 按钮
-        self.btn_run = ctk.CTkButton(self, text="立即手动开始 (测试所有链接)", height=40, command=lambda: threading.Thread(target=self.manual_run).start())
-        self.btn_run.pack(pady=15)
+    def add_row_ui(self, url="", note=""):
+        """动态添加一行输入框"""
+        row_frame = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+        row_frame.pack(fill="x", pady=2)
+        
+        # URL 输入
+        entry_url = ctk.CTkEntry(row_frame, placeholder_text="在此粘贴超话链接...", width=380)
+        entry_url.pack(side="left", padx=(0, 5), fill="x", expand=True)
+        if url: entry_url.insert(0, url)
+        
+        # 备注输入
+        entry_note = ctk.CTkEntry(row_frame, placeholder_text="备注 (如: AG超玩会)", width=120)
+        entry_note.pack(side="left", padx=(0, 5))
+        if note: entry_note.insert(0, note)
+        
+        # 删除按钮
+        btn_del = ctk.CTkButton(row_frame, text="🗑️", width=40, fg_color="#dc3545", hover_color="#c82333",
+                                command=lambda: self.delete_row_ui(row_frame))
+        btn_del.pack(side="left")
+        
+        # 保存引用
+        self.row_widgets.append({
+            "frame": row_frame,
+            "url_entry": entry_url,
+            "note_entry": entry_note
+        })
 
-    # ---------------- 注册表自启 ----------------
+    def delete_row_ui(self, frame_obj):
+        """删除一行"""
+        for item in self.row_widgets:
+            if item["frame"] == frame_obj:
+                item["frame"].destroy()
+                self.row_widgets.remove(item)
+                break
+
+    def load_rows_from_config(self):
+        targets = self.config.get("targets", [])
+        if not targets:
+            self.add_row_ui() # 默认给一行空的
+        for t in targets:
+            self.add_row_ui(t.get("url", ""), t.get("note", ""))
+        self.log_msg(f"📂 已加载 {len(targets)} 个超话配置")
+
+    def manual_save(self):
+        count = self.save_config()
+        self.log_msg(f"💾 配置已保存，共 {count} 个有效任务")
+
+    # ---------------- 核心逻辑 (保留 V9.1 并适配 V3.0) ----------------
+    
     def sync_registry_switch(self):
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
@@ -216,11 +285,11 @@ class WeiboCheckInApp(ctk.CTk):
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             if is_on:
                 winreg.SetValueEx(key, APP_REGISTRY_NAME, 0, winreg.REG_SZ, app_path)
-                self.log_msg("✅ 已开机自启")
+                self.log_msg("✅ 已设置开机自启")
             else:
                 try: winreg.DeleteValue(key, APP_REGISTRY_NAME)
                 except: pass
-                self.log_msg("❎ 已关闭自启")
+                self.log_msg("❎ 已取消开机自启")
             winreg.CloseKey(key)
             self.config["auto_start"] = is_on
             self.save_config()
@@ -228,27 +297,26 @@ class WeiboCheckInApp(ctk.CTk):
             self.log_msg(f"❌ 注册表错误: {e}")
             self.switch_autostart.toggle()
 
-    # ---------------- 智能监测循环 ----------------
     def smart_monitor_loop(self):
-        time.sleep(2)
-        self.log_msg("🛡️ 后台监测启动...")
+        time.sleep(3)
+        self.log_msg("🛡️ 后台智能监测中...")
         while True:
             try:
                 today = time.strftime("%Y-%m-%d")
                 last_date = self.config.get("last_checkin_date", "1970-01-01")
                 
                 if today != last_date:
-                    self.log_msg(f"📅 新日期 ({today})，准备执行任务...")
+                    self.log_msg(f"📅 新的一天 ({today})，自动启动任务...")
                     time.sleep(10) # 联网缓冲
                     
                     if self.execute_batch_task():
-                        self.log_msg("🎉 所有任务均已完成！")
+                        self.log_msg("🎉 自动任务全部完成！")
                         self.config["last_checkin_date"] = today
                         self.save_config()
                         if self.switch_sleep.get():
                             self.after(0, self.trigger_safety_sleep)
                     else:
-                        self.log_msg("⚠️ 部分任务失败或网络不通，30分钟后重试...")
+                        self.log_msg("⚠️ 任务未全部成功，30分钟后重试...")
                         time.sleep(1800)
                         continue
                 time.sleep(60)
@@ -257,7 +325,8 @@ class WeiboCheckInApp(ctk.CTk):
                 time.sleep(60)
 
     def manual_run(self):
-        self.log_msg("🔧 手动触发...")
+        self.save_config() # 先保存
+        self.log_msg("🔧 开始手动执行...")
         if self.execute_batch_task():
             today = time.strftime("%Y-%m-%d")
             self.config["last_checkin_date"] = today
@@ -267,61 +336,56 @@ class WeiboCheckInApp(ctk.CTk):
                 self.after(0, self.trigger_safety_sleep)
 
     def execute_batch_task(self):
-        """执行所有链接的签到任务"""
         if self.is_running:
-            self.log_msg("⚠️ 正在运行中...")
+            self.log_msg("⚠️ 正在运行中，请稍候...")
             return False
         
         self.is_running = True
+        targets = self.config.get("targets", [])
         
-        # 1. 提取所有链接
-        raw_text = self.textbox_urls.get("1.0", "end-1c")
-        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', raw_text)
-        
-        if not urls:
-            self.log_msg("❌ 未检测到链接，请在上方输入框粘贴链接")
+        if not targets:
+            self.log_msg("❌ 任务列表为空，请先添加超话链接")
             self.is_running = False
             return False
             
-        self.log_msg(f"📋 检测到 {len(urls)} 个超话链接，准备开始...")
+        self.log_msg(f"📋 队列中共有 {len(targets)} 个任务，准备启动 Edge...")
 
-        # 2. 配置浏览器
         driver = None
         all_success = True
         
         try:
             options = Options()
-            # 根据开关决定是否无头
             if not self.switch_visible.get():
-                options.add_argument("--headless=new") 
+                options.add_argument("--headless=new")
             
             options.add_argument("--disable-gpu")
             options.add_argument("--log-level=3")
             options.add_argument("--mute-audio")
-            
             user_data = os.path.join(os.environ['LOCALAPPDATA'], 'Microsoft', 'Edge', 'User Data')
             options.add_argument(f"--user-data-dir={user_data}")
             options.add_argument("--profile-directory=Default")
             
-            self.log_msg("🚀 正在启动 Edge 浏览器...")
             try:
                 service = Service(EdgeChromiumDriverManager().install())
-            except Exception as e:
-                self.log_msg("⚠️ 自动下载驱动失败 (可能网络问题)，尝试直接启动...")
-                service = Service() # 尝试使用系统默认路径
+            except Exception:
+                self.log_msg("⚠️ 驱动下载失败，尝试使用系统默认...")
+                service = Service()
                 
             service.creation_flags = 0x08000000 
             driver = webdriver.Edge(service=service, options=options)
             
-            # 3. 循环执行签到
-            for i, url in enumerate(urls):
-                self.log_msg(f"👉 [{i+1}/{len(urls)}] 正在访问超话...")
+            for i, item in enumerate(targets):
+                url = item.get("url", "")
+                note = item.get("note", "未知超话")
+                
+                if not url: continue
+
+                self.log_msg(f"👉 [{i+1}/{len(targets)}] 正在检查: {note}")
                 try:
                     driver.get(url)
                     WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(2) # 等待渲染
+                    time.sleep(2) 
                     
-                    # 查找签到按钮 (增强版 XPath)
                     xpath = "//a[contains(text(),'签到')] | //div[contains(text(),'签到')] | //span[contains(text(),'签到')]"
                     btns = driver.find_elements(By.XPATH, xpath)
                     
@@ -330,37 +394,35 @@ class WeiboCheckInApp(ctk.CTk):
                         txt = btn.text
                         if "已" not in txt and "等级" not in txt and btn.is_displayed():
                             driver.execute_script("arguments[0].click();", btn)
-                            self.log_msg(f"   🖱️ 点击签到")
+                            self.log_msg(f"   🖱️ {note}: 签到点击成功")
                             clicked = True
                             time.sleep(2)
                             break
                     
                     if not clicked:
                         if "已签" in driver.page_source:
-                            self.log_msg(f"   ℹ️ 本页已签到")
+                            self.log_msg(f"   ℹ️ {note}: 今天已经签过了")
                         else:
-                            self.log_msg(f"   ⚠️ 未找到按钮，可能需登录或页面结构变更")
+                            self.log_msg(f"   ⚠️ {note}: 未找到签到按钮")
                             
                 except Exception as e:
-                    self.log_msg(f"   ❌ 当前链接出错: {str(e)[:50]}")
-                    all_success = False # 标记有失败，但继续下一个
+                    self.log_msg(f"   ❌ {note} 失败: {str(e)[:30]}")
+                    all_success = False 
                 
-                time.sleep(1) # 链接间隔
+                time.sleep(1)
                 
         except Exception as e:
-            self.log_msg(f"❌ 浏览器严重错误 (驱动/网络): {e}")
-            self.log_msg("💡 建议开启'显示浏览器界面'开关以排查问题")
+            self.log_msg(f"❌ 浏览器启动失败: {e}")
             all_success = False
         finally:
-            if driver:
-                driver.quit()
+            if driver: driver.quit()
             self.is_running = False
             
         return all_success
 
     # ---------------- 辅助功能 ----------------
     def trigger_safety_sleep(self):
-        SafetySleepWindow(self, lambda: self.log_msg("👋 取消睡眠"), lambda: PowerManagement.execute_sleep_macro())
+        SafetySleepWindow(self, lambda: self.log_msg("👋 用户取消睡眠"), lambda: PowerManagement.execute_sleep_macro())
 
     def log_msg(self, msg):
         full_msg = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
@@ -382,11 +444,12 @@ class WeiboCheckInApp(ctk.CTk):
         sys.exit()
 
     def create_tray_icon(self):
-        image = Image.new('RGB', (64, 64), color=(30, 144, 255))
+        # 简单绘制一个图标
+        image = Image.new('RGB', (64, 64), color=(70, 130, 180))
         draw = ImageDraw.Draw(image)
-        draw.rectangle((16, 16, 48, 48), fill="white")
-        menu = (pystray.MenuItem('显示主界面', self.show_window, default=True), pystray.MenuItem('退出', self.quit_app))
-        self.tray_icon = pystray.Icon("weibo_helper", image, "微博助手", menu)
+        draw.ellipse((16, 16, 48, 48), fill="white")
+        menu = (pystray.MenuItem('显示主界面', self.show_window, default=True), pystray.MenuItem('退出程序', self.quit_app))
+        self.tray_icon = pystray.Icon("weibo_helper_v3", image, "微博助手V3", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
 if __name__ == "__main__":

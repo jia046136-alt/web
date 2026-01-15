@@ -1,31 +1,32 @@
-# 微博超话自动签到助手 (Weibo SuperTopic Auto Sign) V2.0
+# Weibo SuperTopic Auto Sign V3.0 (微博超话自动签到助手)
 
-基于 Python + Selenium + CustomTkinter 开发的智能签到工具。
-专为解决“忘记签到”和“后台静默运行”需求设计，支持开机自启、智能日期监测及防误触自动睡眠。
+![Platform](https://img.shields.io/badge/Platform-Windows-blue)
+![Python](https://img.shields.io/badge/Python-3.10%2B-green)
+![Status](https://img.shields.io/badge/Status-Stable-brightgreen)
 
-## ✨ 核心特性 (V2.0)
+Weibo SuperTopic Auto Sign 是一款基于 Python (CustomTkinter + Selenium) 开发的 Windows 桌面应用。
+V3.0 版本采用全新浅色 UI，支持可视化管理超话列表，内置防误触睡眠机制和物理级按键宏，专为无人值守挂机设计。
 
-* **🛡️ 智能后台监测**：
-    * 基于日期的智能判断机制。
-    * 今日已签 -> 静默待机；今日未签 -> 立即执行。
-    * 支持跨天（00:00）自动触发。
-* **🚀 开机自动启动**：
-    * 内置注册表管理（WinReg），一键设置开机自启，后台静默运行。
-* **🔗 批量签到支持**：
-    * 支持多行文本输入，一次性处理数十个超话链接。
-* **💤 防误触安全睡眠**：
-    * 任务完成后尝试睡眠前，会弹出 **60秒置顶倒计时窗口**。
-    * 用户在使用电脑时可点击“取消”，防止游戏/工作中断。
-    * 采用物理级睡眠宏（Win+X -> U -> S），兼容性更强。
-* **👁️ 可视化/无头模式切换**：
-    * 提供“显示浏览器界面”开关，方便排查网络或验证码问题。
-* **🔧 自动驱动管理**：
-    * 集成 `webdriver_manager`，自动适配 Edge 浏览器版本。
+## ✨ V3.0 新特性
 
-## 🛠️ 安装与使用
+* **🎨 全新 UI**: 强制浅色清爽主题，现代化交互设计。
+* **📋 动态列表**: 可视化添加/删除超话链接，支持自定义**备注名**。
+* **🤖 智能自动化**: 
+    * 自动调用 Edge 浏览器完成签到。
+    * 内置 `msedgedriver` 自动下载与版本匹配。
+    * 每日仅执行一次（基于日期记忆）。
+* **💤 安全睡眠**: 任务完成后支持自动睡眠，包含 60秒 倒计时防误触弹窗。
+* **🛡️ 物理宏**: 使用 `Win+X, U, S` 物理按键模拟进入睡眠，规避部分系统 API 休眠失效问题。
+* **🚀 工程化**: 提供一键打包脚本，生成单文件 `.exe`。
 
-### 1. 环境准备
-确保已安装 Python 3.x 和 Edge 浏览器。
+## 🛠️ 环境依赖
 
+* Windows 10/11
+* Microsoft Edge 浏览器
+* Python 3.10+
+
+## 📦 安装与运行
+
+### 1. 安装依赖
 ```bash
 pip install -r requirements.txt
